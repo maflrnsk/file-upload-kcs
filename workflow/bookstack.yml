@@ -1,77 +1,285 @@
-name: Sync Issues to BookStack
+name: Sync Issue to BookStack KCS
 
 on:
   issues:
-    types: [opened, edited, closed]
+    types: [opened, edited, closed, labeled, unlabeled]
 
 jobs:
-  sync:
+  sync_to_bookstack:
     runs-on: ubuntu-latest
     
+    if: contains(github.event.issue.labels.*.name, 'upload-bug')
+    
     steps:
+      - name: Check labels
+        run: echo "Issue has upload-bug label, proceeding..."
+      
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
+      - name: Setup Python
+        uses: actions/setup-python@v4
         with:
-          node-version: '18'
+          python-version: '3.10'
 
-      - name: Debug - Show environment info
+      - name: Parse Issue and Generate HTML
+        id: parse_issue
         run: |
-          echo "=== Debug Information ==="
-          echo "Node version: $(node --version)"
-          echo "Current directory: $(pwd)"
-          echo "Files in directory:"
-          ls -la
-          echo ""
-          echo "Checking script.js:"
-          if [ -f "script.js" ]; then
-            echo "✅ script.js exists"
-            echo "First few lines of script.js:"
-            head -20 script.js
-          else
-            echo "❌ script.js not found!"
-          fi
-
-      - name: Install dependencies
-        run: |
-          echo "Installing dependencies..."
-          npm init -y --silent
-          npm install axios marked --no-fund --no-audit --silent
-          echo "Dependencies installed"
-
-      - name: Debug - Check environment variables
-        run: |
-          echo "=== Checking Environment Variables ==="
-          echo "BOOKSTACK_API_URL is set: $([ -n \"$BOOKSTACK_API_URL\" ] && echo 'YES' || echo 'NO')"
-          echo "BOOKSTACK_TOKEN_ID is set: $([ -n \"$BOOKSTACK_TOKEN_ID\" ] && echo 'YES' || echo 'NO')"
-          echo "BOOKSTACK_BOOK_ID is set: $([ -n \"$BOOKSTACK_BOOK_ID\" ] && echo 'YES' || echo 'NO')"
+          python -c "
+          import json
+          import os
+          import re
+          import sys
           
-          # Проверяем, есть ли event payload
-          if [ -f "$GITHUB_EVENT_PATH" ]; then
-            echo "✅ GitHub event payload exists"
-            echo "Event type: $(jq -r '.action' $GITHUB_EVENT_PATH 2>/dev/null || echo 'Cannot parse')"
-          else
-            echo "❌ GitHub event payload not found"
-          fi
+          # Получаем данные Issue
+          issue_json = '''${{ toJSON(github.event.issue) }}'''.replace(\"'\", '\"')
+          issue_data = json.loads(issue_json)
+          
+          issue_title = issue_data['title']
+          issue_body = issue_data.get('body', '')
+          issue_number = issue_data['number']
+          issue_state = issue_data['state']
+          issue_url = issue_data['html_url']
+          issue_labels = ', '.join([l['name'] for l in issue_data['labels']])
+          
+          # Простой парсинг
+          sections = {'problem': '', 'cause': '', 'solution': '', 'links': ''}
+          current_section = ''
+          
+          for line in issue_body.split('\n'):
+              line = line.strip()
+              if line.startswith('## Проблема') or line.startswith('### Проблема'):
+                  current_section = 'problem'
+                  continue
+              elif line.startswith('## Причина') or line.startswith('### Причина'):
+                  current_section = 'cause'
+                  continue
+              elif line.startswith('## Решение') or line.startswith('### Решение'):
+                  current_section = 'solution'
+                  continue
+              elif line.startswith('## Ссылки') or line.startswith('### Ссылки'):
+                  current_section = 'links'
+                  continue
+              
+              if current_section and not line.startswith('##'):
+                  sections[current_section] += line + '\n'
+          
+          # Формируем HTML
+          problem = sections['problem'].strip() or 'Информация не указана'
+          cause = sections['cause'].strip() or 'Причина не определена'
+          solution = sections['solution'].strip() or 'Решение пока не найдено'
+          links = sections['links'].strip() or 'Ссылки отсутствуют'
+          
+          # Простая конвертация markdown в HTML (базовая)
+          def simple_markdown(text):
+              if not text:
+                  return ''
+              # Заголовки
+              text = re.sub(r'^### (.*)$', r'<h3>\1</h3>', text, flags=re.MULTILINE)
+              text = re.sub(r'^## (.*)$', r'<h2>\1</h2>', text, flags=re.MULTILINE)
+              # Жирный текст
+              text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', text)
+              # Курсив
+              text = re.sub(r'\*(.*?)\*', r'<em>\1</em>', text)
+              # Ссылки
+              text = re.sub(r'\[(.*?)\]\((.*?)\)', r'<a href=\"\2\">\1</a>', text)
+              # Списки
+              lines = text.split('\n')
+              result = []
+              in_list = False
+              for line in lines:
+                  if line.strip().startswith('- '):
+                      if not in_list:
+                          result.append('<ul>')
+                          in_list = True
+                      result.append(f'<li>{line.strip()[2:]}</li>')
+                  else:
+                      if in_list:
+                          result.append('</ul>')
+                          in_list = False
+                      if line.strip():
+                          result.append(f'<p>{line}</p>')
+              if in_list:
+                  result.append('</ul>')
+              return ''.join(result)
+          
+          problem_html = simple_markdown(problem)
+          cause_html = simple_markdown(cause)
+          solution_html = simple_markdown(solution)
+          links_html = simple_markdown(links)
+          
+          # Экранируем кавычки для JSON
+          def escape_quotes(text):
+              return text.replace('\"', '\\\"').replace(\"'\", \"\\'\")
+          
+          final_html = f'''<div class=\"kcs-article\">
+  <h2>Проблема</h2>
+  <div class=\"problem-section\">
+    {problem_html}
+  </div>
+  
+  <h2>Причина</h2>
+  <div class=\"cause-section\">
+    {cause_html}
+  </div>
+  
+  <h2>Решение</h2>
+  <div class=\"solution-section\">
+    {solution_html}
+  </div>
+  
+  <h2>Ссылки</h2>
+  <div class=\"links-section\">
+    <ul>
+      <li><strong>GitHub Issue:</strong> <a href=\"{issue_url}\" target=\"_blank\">#{issue_number} - {issue_title}</a></li>
+      {links_html}
+    </ul>
+  </div>
+  
+  <hr>
+  <div class=\"metadata\">
+    <p><strong>Статус Issue:</strong> {\"Открыт\" if issue_state == \"open\" else \"Закрыт\"}</p>
+    <p><strong>GitHub Labels:</strong> {issue_labels}</p>
+    <p><small>Автоматически создано из GitHub Issue #{issue_number}</small></p>
+  </div>
+</div>
 
-      - name: Run BookStack sync script
-        run: |
-          echo "=== Running script.js ==="
-          node script.js
+<style>
+  .kcs-article {{ font-family: Arial, sans-serif; line-height: 1.6; }}
+  .kcs-article h2 {{ 
+    color: #2c3e50; 
+    border-bottom: 2px solid #3498db;
+    padding-bottom: 5px;
+    margin-top: 25px;
+  }}
+  .solution-section {{ 
+    background-color: #f8f9fa; 
+    padding: 15px; 
+    border-radius: 5px;
+    border-left: 4px solid #2ecc71;
+    margin-bottom: 20px;
+  }}
+  .metadata {{ 
+    background-color: #e8f4fc; 
+    padding: 15px; 
+    border-radius: 5px;
+    font-size: 0.9em;
+    color: #555;
+    margin-top: 20px;
+  }}
+</style>'''
+          
+          # Формируем заголовок
+          page_title = f'KCS: {issue_title.replace(\"[Upload Bug]\", \"\").strip()} (#{issue_number})'
+          
+          # Формируем теги
+          tags = ['kcs', 'upload', 'images', 'storage', 'bug', f'issue-{issue_number}', f'state-{issue_state}']
+          # Добавляем дополнительные теги из labels
+          for label in issue_data['labels']:
+              tag_name = label['name'].lower().replace(' ', '-').replace('_', '-')
+              if tag_name not in ['upload-bug', 'upload', 'bug']:
+                  tags.append(tag_name)
+          
+          tags_json = json.dumps(tags)
+          
+          # Выводим результаты
+          print(f'::set-output name=title::{page_title}')
+          escaped_html = final_html.replace('\n', ' ').replace('\"', '\\\\\"')
+          print(f'::set-output name=html::{escaped_html}')
+          print(f'::set-output name=tags::{tags_json}')
+          print(f'::set-output name=issue_number::{issue_number}')
+          "
+
+      - name: Create/Update Page in BookStack
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BOOKSTACK_API_URL: ${{ secrets.BOOKSTACK_API_URL }}
-          BOOKSTACK_TOKEN_ID: ${{ secrets.BOOKSTACK_TOKEN_ID }}
-          BOOKSTACK_TOKEN_SECRET: ${{ secrets.BOOKSTACK_TOKEN_SECRET }}
-          BOOKSTACK_BOOK_ID: ${{ secrets.BOOKSTACK_BOOK_ID }}
-
-      - name: Upload logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v3
-        with:
-          name: debug-logs
-          path: |
-            script.js
-            package.json
+          BASE_URL: ${{ secrets.BOOKSTACK_BASE_URL }}
+          TOKEN_ID: ${{ secrets.BOOKSTACK_TOKEN_ID }}
+          TOKEN_SECRET: ${{ secrets.BOOKSTACK_TOKEN_SECRET }}
+          BOOK_ID: ${{ secrets.BOOKSTACK_BOOK_ID }}
+          PAGE_TITLE: ${{ steps.parse_issue.outputs.title }}
+          PAGE_HTML: ${{ steps.parse_issue.outputs.html }}
+          PAGE_TAGS: ${{ steps.parse_issue.outputs.tags }}
+          ISSUE_NUMBER: ${{ steps.parse_issue.outputs.issue_number }}
+        run: |
+          echo "Starting BookStack sync for issue #${ISSUE_NUMBER}"
+          
+          # Ищем существующую страницу по тегу issue-{number}
+          echo "Searching for existing page with tag: issue-${ISSUE_NUMBER}"
+          
+          SEARCH_URL="${BASE_URL}/api/pages?filter[tag]=issue-${ISSUE_NUMBER}"
+          
+          SEARCH_RESPONSE=$(curl -s -X GET \
+            -H "Authorization: Token ${TOKEN_ID}:${TOKEN_SECRET}" \
+            -H "Content-Type: application/json" \
+            "$SEARCH_URL")
+          
+          # Извлекаем ID существующей страницы
+          EXISTING_PAGE_ID=$(echo "$SEARCH_RESPONSE" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+          
+          if [ -n "$EXISTING_PAGE_ID" ]; then
+            echo "Found existing page ID: ${EXISTING_PAGE_ID}"
+          else
+            echo "No existing page found, will create new one"
+          fi
+          
+          # Подготавливаем JSON данные
+          JSON_DATA=$(cat <<EOF
+          {
+            "name": "${PAGE_TITLE}",
+            "book_id": ${BOOK_ID},
+            "html": "${PAGE_HTML}",
+            "tags": ${PAGE_TAGS}
+          }
+          EOF
+          )
+          
+          if [ -z "$EXISTING_PAGE_ID" ]; then
+            # Создаем новую страницу
+            echo "Creating new page..."
+            
+            RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
+              -H "Authorization: Token ${TOKEN_ID}:${TOKEN_SECRET}" \
+              -H "Content-Type: application/json" \
+              -d "$JSON_DATA" \
+              "${BASE_URL}/api/pages")
+              
+            HTTP_CODE=$(echo "$RESPONSE" | grep "HTTP_STATUS:" | cut -d: -f2)
+            RESPONSE_BODY=$(echo "$RESPONSE" | sed '/HTTP_STATUS:/d')
+            
+            echo "HTTP Status: ${HTTP_CODE}"
+            
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+              PAGE_ID=$(echo "$RESPONSE_BODY" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+              echo "✅ Page created successfully! ID: ${PAGE_ID}"
+              echo "Link: ${BASE_URL}/books/kcs/page/${PAGE_ID}"
+            else
+              echo "❌ Failed to create page"
+              echo "Response: ${RESPONSE_BODY}"
+              exit 1
+            fi
+          else
+            # Обновляем существующую страницу
+            echo "Updating existing page (ID: ${EXISTING_PAGE_ID})..."
+            
+            RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT \
+              -H "Authorization: Token ${TOKEN_ID}:${TOKEN_SECRET}" \
+              -H "Content-Type: application/json" \
+              -d "$JSON_DATA" \
+              "${BASE_URL}/api/pages/${EXISTING_PAGE_ID}")
+              
+            HTTP_CODE=$(echo "$RESPONSE" | grep "HTTP_STATUS:" | cut -d: -f2)
+            RESPONSE_BODY=$(echo "$RESPONSE" | sed '/HTTP_STATUS:/d')
+            
+            echo "HTTP Status: ${HTTP_CODE}"
+            
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
+              echo "✅ Page updated successfully! ID: ${EXISTING_PAGE_ID}"
+              echo "Link: ${BASE_URL}/books/kcs/page/${EXISTING_PAGE_ID}"
+            else
+              echo "❌ Failed to update page"
+              echo "Response: ${RESPONSE_BODY}"
+              exit 1
+            fi
+          fi
+          
+          echo "✅ Sync completed successfully!"
