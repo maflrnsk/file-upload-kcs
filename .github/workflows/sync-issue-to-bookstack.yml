@@ -2,175 +2,72 @@ name: Sync Issue to BookStack KCS
 
 on:
   issues:
-    types: [opened, edited, closed, labeled]
+    types: [opened, edited, closed, labeled, unlabeled]
 
 jobs:
   sync_to_bookstack:
-    if: |
-      github.event.label.name == 'upload-bug' ||
-      (github.event.action == 'labeled' && github.event.label.name == 'upload-bug')
     runs-on: ubuntu-latest
     
+    # Проверяем наличие метки upload-bug
+    if: |
+      contains(github.event.issue.labels.*.name, 'upload-bug')
+    
     steps:
+      - name: Debug - Check issue labels
+        run: |
+          echo "Issue labels: ${{ toJSON(github.event.issue.labels) }}"
+          echo "Issue has upload-bug label: ${{ contains(github.event.issue.labels.*.name, 'upload-bug') }}"
+      
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Setup Node.js
+      - name: Setup Node.js environment
         uses: actions/setup-node@v3
         with:
           node-version: '18'
 
       - name: Parse Issue and Generate HTML
         id: parse_issue
-        run: |
-          const { marked } = require('marked');
-          
-          // Получаем данные Issue
-          const issue = `${{ toJSON(github.event.issue) }}`;
-          const issueData = JSON.parse(issue);
-          
-          const issueTitle = issueData.title;
-          const issueBody = issueData.body;
-          const issueNumber = issueData.number;
-          const issueState = issueData.state;
-          const issueUrl = issueData.html_url;
-          const issueLabels = issueData.labels.map(l => l.name).join(', ');
-          
-          // Простой парсинг тела Issue (ищем секции по заголовкам)
-          const bodyLines = issueBody.split('\n');
-          let problem = '', cause = '', solution = '', links = '';
-          let currentSection = '';
-          
-          for (const line of bodyLines) {
-            if (line.startsWith('## Проблема') || line.startsWith('### Проблема')) {
-              currentSection = 'problem';
-              continue;
-            } else if (line.startsWith('## Причина') || line.startsWith('### Причина')) {
-              currentSection = 'cause';
-              continue;
-            } else if (line.startsWith('## Решение') || line.startsWith('### Решение')) {
-              currentSection = 'solution';
-              continue;
-            } else if (line.startsWith('## Ссылки') || line.startsWith('### Ссылки')) {
-              currentSection = 'links';
-              continue;
-            } else if (line.startsWith('## Метки') || line.startsWith('### Метки')) {
-              break; // Метки обрабатываем отдельно
-            }
-            
-            if (currentSection === 'problem' && !line.startsWith('##')) {
-              problem += line + '\n';
-            } else if (currentSection === 'cause' && !line.startsWith('##')) {
-              cause += line + '\n';
-            } else if (currentSection === 'solution' && !line.startsWith('##')) {
-              solution += line + '\n';
-            } else if (currentSection === 'links' && !line.startsWith('##')) {
-              links += line + '\n';
-            }
-          }
-          
-          // Конвертируем Markdown в HTML
-          const problemHtml = marked.parse(problem.trim() || 'Информация не указана');
-          const causeHtml = marked.parse(cause.trim() || 'Причина не определена');
-          const solutionHtml = marked.parse(solution.trim() || 'Решение пока не найдено');
-          const linksHtml = marked.parse(links.trim() || 'Ссылки отсутствуют');
-          
-          // Формируем финальный HTML в формате KCS
-          const finalHtml = `
-            <div class="kcs-article">
-              <h2>Проблема</h2>
-              <div class="problem-section">
-                ${problemHtml}
-              </div>
-              
-              <h2>Причина</h2>
-              <div class="cause-section">
-                ${causeHtml}
-              </div>
-              
-              <h2>Решение</h2>
-              <div class="solution-section">
-                ${solutionHtml}
-              </div>
-              
-              <h2>Ссылки</h2>
-              <div class="links-section">
-                <ul>
-                  <li><strong>GitHub Issue:</strong> <a href="${issueUrl}" target="_blank">#${issueNumber} - ${issueTitle}</a></li>
-                  ${linksHtml}
-                </ul>
-              </div>
-              
-              <hr>
-              <div class="metadata">
-                <p><strong>Статус Issue:</strong> ${issueState === 'open' ? 'Открыт' : 'Закрыт'}</p>
-                <p><strong>GitHub Labels:</strong> ${issueLabels}</p>
-                <p><small>Автоматически создано из GitHub Issue #${issueNumber}</small></p>
-              </div>
-            </div>
-            
-            <style>
-              .kcs-article { font-family: Arial, sans-serif; }
-              .kcs-article h2 { 
-                color: #2c3e50; 
-                border-bottom: 2px solid #3498db;
-                padding-bottom: 5px;
-              }
-              .kcs-article h3 { color: #34495e; }
-              .solution-section { background-color: #f8f9fa; padding: 15px; border-radius: 5px; }
-              .metadata { 
-                background-color: #e8f4fc; 
-                padding: 10px; 
-                border-radius: 5px;
-                font-size: 0.9em;
-                color: #555;
-              }
-            </style>
-          `;
-          
-          // Формируем заголовок
-          const pageTitle = `KCS: ${issueTitle.replace('[Upload Bug]', '').trim()} (#${issueNumber})`;
-          
-          // Формируем теги
-          const tags = ['kcs', 'upload', 'images', 'storage', 'bug'];
-          if (issueLabels.includes('bug-fix')) tags.push('bug-fix');
-          if (issueLabels.includes('nginx')) tags.push('nginx');
-          if (issueLabels.includes('config')) tags.push('config');
-          tags.push(`issue-${issueNumber}`, `state-${issueState}`);
-          
-          // Выводим результаты
-          console.log(`::set-output name=title::${pageTitle}`);
-          console.log(`::set-output name=html::${finalHtml.replace(/\n/g, ' ')}`);
-          console.log(`::set-output name=tags::${JSON.stringify(tags)}`);
-          console.log(`::set-output name=issue_number::${issueNumber}`);
-        shell: node
+        # Используем отдельный JavaScript файл
+        run: node .github/scripts/parse-issue.js
+        env:
+          ISSUE_DATA: ${{ toJSON(github.event.issue) }}
 
       - name: Create/Update Page in BookStack
+        env:
+          BASE_URL: ${{ secrets.BOOKSTACK_BASE_URL }}
+          TOKEN_ID: ${{ secrets.BOOKSTACK_TOKEN_ID }}
+          TOKEN_SECRET: ${{ secrets.BOOKSTACK_TOKEN_SECRET }}
+          AUTHOR_ID: ${{ secrets.BOOKSTACK_AUTHOR_ID }}
+          BOOK_ID: ${{ secrets.BOOKSTACK_BOOK_ID }}
+          PAGE_TITLE: ${{ steps.parse_issue.outputs.title }}
+          PAGE_HTML: ${{ steps.parse_issue.outputs.html }}
+          PAGE_TAGS: ${{ steps.parse_issue.outputs.tags }}
+          ISSUE_NUMBER: ${{ steps.parse_issue.outputs.issue_number }}
         run: |
-          # Настройки из Secrets
-          BASE_URL="${{ secrets.BOOKSTACK_BASE_URL }}"
-          TOKEN_ID="${{ secrets.BOOKSTACK_TOKEN_ID }}"
-          TOKEN_SECRET="${{ secrets.BOOKSTACK_TOKEN_SECRET }}"
-          AUTHOR_ID="${{ secrets.BOOKSTACK_AUTHOR_ID }}"
-          BOOK_ID="${{ secrets.BOOKSTACK_BOOK_ID }}"
-          
-          # Данные из предыдущего шага
-          PAGE_TITLE="${{ steps.parse_issue.outputs.title }}"
-          PAGE_HTML="${{ steps.parse_issue.outputs.html }}"
-          PAGE_TAGS='${{ steps.parse_issue.outputs.tags }}'
-          ISSUE_NUMBER="${{ steps.parse_issue.outputs.issue_number }}"
+          echo "Starting BookStack sync for issue #${ISSUE_NUMBER}"
           
           # Ищем существующую страницу по тегу issue-{number}
-          echo "Поиск существующей страницы для issue #${ISSUE_NUMBER}..."
+          echo "Searching for existing page with tag: issue-${ISSUE_NUMBER}"
           
           SEARCH_URL="${BASE_URL}/api/pages?filter[tag]=issue-${ISSUE_NUMBER}"
+          echo "Search URL: ${SEARCH_URL}"
+          
           SEARCH_RESPONSE=$(curl -s -X GET \
             -H "Authorization: Token ${TOKEN_ID}:${TOKEN_SECRET}" \
             -H "Content-Type: application/json" \
             "$SEARCH_URL")
           
-          # Извлекаем ID существующей страницы (если есть)
+          echo "Search response received"
+          
+          # Извлекаем ID существующей страницы
           EXISTING_PAGE_ID=$(echo "$SEARCH_RESPONSE" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+          
+          if [ -n "$EXISTING_PAGE_ID" ]; then
+            echo "Found existing page ID: ${EXISTING_PAGE_ID}"
+          else
+            echo "No existing page found, will create new one"
+          fi
           
           # Подготавливаем JSON данные
           JSON_DATA=$(cat <<EOF
@@ -180,39 +77,57 @@ jobs:
             "html": "$PAGE_HTML",
             "tags": $PAGE_TAGS
           }
-          EOF
+EOF
           )
           
           if [ -z "$EXISTING_PAGE_ID" ]; then
             # Создаем новую страницу
-            echo "Создание новой страницы..."
+            echo "Creating new page..."
             
-            RESPONSE=$(curl -s -X POST \
+            RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
               -H "Authorization: Token ${TOKEN_ID}:${TOKEN_SECRET}" \
               -H "Content-Type: application/json" \
               -d "$JSON_DATA" \
               "${BASE_URL}/api/pages")
               
-            PAGE_ID=$(echo "$RESPONSE" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+            # Извлекаем HTTP статус
+            HTTP_CODE=$(echo "$RESPONSE" | grep "HTTP_STATUS:" | cut -d: -f2)
+            RESPONSE_BODY=$(echo "$RESPONSE" | sed '/HTTP_STATUS:/d')
             
-            if [ -n "$PAGE_ID" ]; then
-              echo "✅ Страница создана! ID: $PAGE_ID"
-              echo "Ссылка: ${BASE_URL}/books/kcs/page/${PAGE_ID}"
+            echo "HTTP Status: ${HTTP_CODE}"
+            
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+              PAGE_ID=$(echo "$RESPONSE_BODY" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+              echo "✅ Page created successfully! ID: ${PAGE_ID}"
+              echo "Link: ${BASE_URL}/books/kcs/page/${PAGE_ID}"
             else
-              echo "❌ Ошибка создания страницы"
-              echo "Ответ API: $RESPONSE"
+              echo "❌ Failed to create page"
+              echo "Response: ${RESPONSE_BODY}"
               exit 1
             fi
           else
             # Обновляем существующую страницу
-            echo "Обновление существующей страницы (ID: $EXISTING_PAGE_ID)..."
+            echo "Updating existing page (ID: ${EXISTING_PAGE_ID})..."
             
-            RESPONSE=$(curl -s -X PUT \
+            RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X PUT \
               -H "Authorization: Token ${TOKEN_ID}:${TOKEN_SECRET}" \
               -H "Content-Type: application/json" \
               -d "$JSON_DATA" \
               "${BASE_URL}/api/pages/${EXISTING_PAGE_ID}")
               
-            echo "✅ Страница обновлена! ID: $EXISTING_PAGE_ID"
-            echo "Ссылка: ${BASE_URL}/books/kcs/page/${EXISTING_PAGE_ID}"
+            HTTP_CODE=$(echo "$RESPONSE" | grep "HTTP_STATUS:" | cut -d: -f2)
+            RESPONSE_BODY=$(echo "$RESPONSE" | sed '/HTTP_STATUS:/d')
+            
+            echo "HTTP Status: ${HTTP_CODE}"
+            
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
+              echo "✅ Page updated successfully! ID: ${EXISTING_PAGE_ID}"
+              echo "Link: ${BASE_URL}/books/kcs/page/${EXISTING_PAGE_ID}"
+            else
+              echo "❌ Failed to update page"
+              echo "Response: ${RESPONSE_BODY}"
+              exit 1
+            fi
           fi
+          
+          echo "✅ Sync completed successfully!"
