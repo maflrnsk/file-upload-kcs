@@ -1,0 +1,22 @@
+name: Sync Issues to BookStack
+
+on:
+  issues:
+    types: [opened, edited, closed]
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: npm install marked axios
+
+      - name: Run BookStack sync script
+        run: node script.js
+        env:
+          BOOKSTACK_API_URL: ${{ secrets.BOOKSTACK_API_URL }}
+          BOOKSTACK_TOKEN_ID: ${{ secrets.BOOKSTACK_TOKEN_ID }}
+          BOOKSTACK_TOKEN_SECRET: ${{ secrets.BOOKSTACK_TOKEN_SECRET }}
+          BOOKSTACK_BOOK_ID: ${{ secrets.BOOKSTACK_BOOK_ID }}
