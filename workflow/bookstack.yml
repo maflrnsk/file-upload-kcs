@@ -7,17 +7,71 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Debug - Show environment info
+        run: |
+          echo "=== Debug Information ==="
+          echo "Node version: $(node --version)"
+          echo "Current directory: $(pwd)"
+          echo "Files in directory:"
+          ls -la
+          echo ""
+          echo "Checking script.js:"
+          if [ -f "script.js" ]; then
+            echo "✅ script.js exists"
+            echo "First few lines of script.js:"
+            head -20 script.js
+          else
+            echo "❌ script.js not found!"
+          fi
 
       - name: Install dependencies
-        run: npm install marked axios
+        run: |
+          echo "Installing dependencies..."
+          npm init -y --silent
+          npm install axios marked --no-fund --no-audit --silent
+          echo "Dependencies installed"
+
+      - name: Debug - Check environment variables
+        run: |
+          echo "=== Checking Environment Variables ==="
+          echo "BOOKSTACK_API_URL is set: $([ -n \"$BOOKSTACK_API_URL\" ] && echo 'YES' || echo 'NO')"
+          echo "BOOKSTACK_TOKEN_ID is set: $([ -n \"$BOOKSTACK_TOKEN_ID\" ] && echo 'YES' || echo 'NO')"
+          echo "BOOKSTACK_BOOK_ID is set: $([ -n \"$BOOKSTACK_BOOK_ID\" ] && echo 'YES' || echo 'NO')"
+          
+          # Проверяем, есть ли event payload
+          if [ -f "$GITHUB_EVENT_PATH" ]; then
+            echo "✅ GitHub event payload exists"
+            echo "Event type: $(jq -r '.action' $GITHUB_EVENT_PATH 2>/dev/null || echo 'Cannot parse')"
+          else
+            echo "❌ GitHub event payload not found"
+          fi
 
       - name: Run BookStack sync script
-        run: node script.js
+        run: |
+          echo "=== Running script.js ==="
+          node script.js
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BOOKSTACK_API_URL: ${{ secrets.BOOKSTACK_API_URL }}
           BOOKSTACK_TOKEN_ID: ${{ secrets.BOOKSTACK_TOKEN_ID }}
           BOOKSTACK_TOKEN_SECRET: ${{ secrets.BOOKSTACK_TOKEN_SECRET }}
           BOOKSTACK_BOOK_ID: ${{ secrets.BOOKSTACK_BOOK_ID }}
 
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: debug-logs
+          path: |
+            script.js
+            package.json
