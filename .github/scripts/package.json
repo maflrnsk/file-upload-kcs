@@ -1,0 +1,8 @@
+{
+  "name": "github-actions-scripts",
+  "version": "1.0.0",
+  "description": "Scripts for GitHub Actions",
+  "dependencies": {
+    "marked": "^4.0.0"
+  }
+}
